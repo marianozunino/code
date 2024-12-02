@@ -1,9 +1,11 @@
-package ui
+package runner
 
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -16,19 +18,21 @@ var (
 )
 
 type Config struct {
-	Command string
-	Args    []string
-	Show    func(string) string
-	Process func(string) string
+	SelectorCmd string
+	Args        []string
+	Show        func(string) string
+	Process     func(string) string
+
+	EditorCmd func(string, string) (string, []string)
 }
 
-type ProjectSelector struct {
+type LuaRunner struct {
 	config *Config
 	state  *lua.LState
 	mu     sync.Mutex
 }
 
-func NewProjectSelector(configFile string) (*ProjectSelector, error) {
+func NewLuaRunner(configFile string) (*LuaRunner, error) {
 	state := lua.NewState()
 	if configFile != "" {
 		if err := state.DoFile(configFile); err != nil {
@@ -40,16 +44,16 @@ func NewProjectSelector(configFile string) (*ProjectSelector, error) {
 	config, err := parseConfig(state)
 	if err != nil {
 		state.Close()
-		return &ProjectSelector{config: defaultConfig()}, nil
+		return &LuaRunner{config: defaultConfig()}, nil
 	}
 
-	return &ProjectSelector{
+	return &LuaRunner{
 		config: config,
 		state:  state,
 	}, nil
 }
 
-func (ps *ProjectSelector) Close() {
+func (ps *LuaRunner) Close() {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	if ps.state != nil {
@@ -58,7 +62,7 @@ func (ps *ProjectSelector) Close() {
 	}
 }
 
-func (ps *ProjectSelector) Select(projects []string) (string, error) {
+func (ps *LuaRunner) Select(projects []string) (string, error) {
 	if len(projects) == 0 {
 		return "", errors.New("no projects provided")
 	}
@@ -68,7 +72,7 @@ func (ps *ProjectSelector) Select(projects []string) (string, error) {
 		formatted[i] = ps.config.Show(project)
 	}
 
-	cmd := exec.Command(ps.config.Command, ps.config.Args...)
+	cmd := exec.Command(ps.config.SelectorCmd, ps.config.Args...)
 	cmd.Stdin = strings.NewReader(strings.Join(formatted, "\n"))
 
 	output, err := cmd.Output()
@@ -93,7 +97,11 @@ func parseConfig(L *lua.LState) (*Config, error) {
 	table := returnValue.(*lua.LTable)
 	config := &Config{}
 
-	if err := parseCommand(L, table, config); err != nil {
+	if err := parseSelectorCommand(L, table, config); err != nil {
+		return nil, err
+	}
+
+	if err := parseEditorCommand(L, table, config); err != nil {
 		return nil, err
 	}
 
@@ -108,8 +116,9 @@ func parseConfig(L *lua.LState) (*Config, error) {
 	return config, nil
 }
 
-func parseCommand(L *lua.LState, table *lua.LTable, config *Config) error {
-	cmdFn := L.GetField(table, "command")
+func parseSelectorCommand(L *lua.LState, table *lua.LTable, config *Config) error {
+	cmdFn := L.GetField(table, "selector_cmd")
+
 	if cmdFn.Type() != lua.LTFunction {
 		return ErrMissingField
 	}
@@ -124,7 +133,7 @@ func parseCommand(L *lua.LState, table *lua.LTable, config *Config) error {
 	}
 
 	tbl := cmdTable.(*lua.LTable)
-	config.Command = lua.LVAsString(tbl.RawGet(lua.LString("command")))
+	config.SelectorCmd = lua.LVAsString(tbl.RawGet(lua.LString("command")))
 	config.Args = parseStringArray(tbl.RawGet(lua.LString("args")))
 	L.Pop(1)
 
@@ -132,8 +141,8 @@ func parseCommand(L *lua.LState, table *lua.LTable, config *Config) error {
 }
 
 func parseFunctions(L *lua.LState, table *lua.LTable, config *Config) error {
-	showFn := L.GetField(table, "show")
-	processFn := L.GetField(table, "process_output")
+	showFn := L.GetField(table, "format_project_title")
+	processFn := L.GetField(table, "extract_path_from_title")
 
 	if showFn.Type() != lua.LTFunction || processFn.Type() != lua.LTFunction {
 		return ErrMissingField
@@ -159,7 +168,7 @@ func createLuaFunction(L *lua.LState, fn lua.LValue) func(string) string {
 }
 
 func validateConfig(config *Config) error {
-	if config.Command == "" || config.Show == nil || config.Process == nil {
+	if config.SelectorCmd == "" || config.Show == nil || config.Process == nil {
 		return ErrMissingField
 	}
 	return nil
@@ -179,10 +188,51 @@ func parseStringArray(v lua.LValue) []string {
 
 func defaultConfig() *Config {
 	return &Config{
-		Command: "fuzzel",
-		Args:    []string{"--dmenu", "--prompt=Project: "},
-		Show:    func(s string) string { return s },
-		Process: func(s string) string { return s },
+		SelectorCmd: "fuzzel",
+		Args:        []string{"--dmenu", "--prompt=Project: "},
+		Show:        func(s string) string { return s },
+		Process:     func(s string) string { return s },
+		EditorCmd: func(dir, title string) (string, []string) {
+			dirName := filepath.Base(dir)
+			tmuxCmd := fmt.Sprintf("tmux new -c %s -A -s %s nvim %s", dir, dirName, dir)
+			return "kitty", []string{"-d", dir, "-T", title, "--class", title, "sh", "-c", tmuxCmd}
+		},
 	}
 }
 
+func parseEditorCommand(L *lua.LState, table *lua.LTable, config *Config) error {
+	cmdFn := L.GetField(table, "editor_cmd")
+	if cmdFn.Type() != lua.LTFunction {
+		return nil
+	}
+	config.EditorCmd = func(dir, title string) (string, []string) {
+		L.Push(cmdFn)
+		L.Push(lua.LString(dir))
+		L.Push(lua.LString(title))
+		if err := L.PCall(2, 1, nil); err != nil { // Changed NArgs to 2
+			return "", nil
+		}
+
+		cmdTable := L.Get(-1)
+		if cmdTable.Type() != lua.LTTable {
+			return "", nil
+		}
+
+		tbl := cmdTable.(*lua.LTable)
+		cmd := lua.LVAsString(tbl.RawGet(lua.LString("command"))) // Changed from "editor_cmd" to "command"
+		args := parseStringArray(tbl.RawGet(lua.LString("args")))
+		L.Pop(1)
+		return cmd, args
+	}
+
+	return nil
+}
+
+func (ps *LuaRunner) Start(dir, title string) error {
+	editorCmd, editorArgs := ps.config.EditorCmd(dir, title)
+	cmd := exec.Command(editorCmd, editorArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
+}
