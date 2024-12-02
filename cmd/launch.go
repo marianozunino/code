@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marianozunino/code/internal/editor"
-	"github.com/marianozunino/code/internal/mru"
-	"github.com/marianozunino/code/internal/must"
-	"github.com/marianozunino/code/internal/project"
-	"github.com/marianozunino/code/internal/ui"
+	"mzunino.com.uy/go/code/internal/editor"
+	"mzunino.com.uy/go/code/internal/mru"
+	"mzunino.com.uy/go/code/internal/must"
+	"mzunino.com.uy/go/code/internal/project"
+	"mzunino.com.uy/go/code/internal/ui"
 
 	"github.com/spf13/cobra"
 )

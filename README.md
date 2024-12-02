@@ -34,7 +34,7 @@ This tool is built around my workflow and assumes the following are installed:
 Install the tool using `go install`:
 
 ```bash
-go install github.com/marianozunino/code@latest
+go install mzunino.com.uy/go/code@latest
 ```
 
 ---

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/marianozunino/code/internal/must"
-	"github.com/marianozunino/code/internal/window"
+	"mzunino.com.uy/go/code/internal/must"
+	"mzunino.com.uy/go/code/internal/window"
 )
 
 type Window struct {

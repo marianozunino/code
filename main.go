@@ -21,7 +21,7 @@ THE SOFTWARE.
 */
 package main
 
-import "github.com/marianozunino/code/cmd"
+import "mzunino.com.uy/go/code/cmd"
 
 func main() {
 	cmd.Execute()

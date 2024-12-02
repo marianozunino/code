@@ -1,4 +1,4 @@
-module github.com/marianozunino/code
+module mzunino.com.uy/go/code
 
 go 1.23.0
 
