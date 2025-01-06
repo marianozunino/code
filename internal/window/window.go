@@ -7,7 +7,7 @@ import (
 	"github.com/joshuarubin/go-sway"
 )
 
-func FindWindow(class string) (int64, error) {
+func FindWindow(title string) (int64, error) {
 	client, err := sway.New(context.Background())
 	if err != nil {
 		return 0, err
@@ -20,7 +20,7 @@ func FindWindow(class string) (int64, error) {
 
 	var findNode func(node *sway.Node) *sway.Node
 	findNode = func(node *sway.Node) *sway.Node {
-		if node.AppID != nil && *node.AppID == class {
+		if node.AppID != nil && *&node.Name == title {
 			return node
 		}
 		for _, n := range node.Nodes {
@@ -48,7 +48,7 @@ func FocusWindow(windowID int64) error {
 		return err
 	}
 
-	cmd := fmt.Sprintf(`[con_id=%d] focus`, windowID)
+	cmd := fmt.Sprintf(`[con_id="%d"] focus`, windowID)
 	_, err = client.RunCommand(context.Background(), cmd)
 	return err
 }
