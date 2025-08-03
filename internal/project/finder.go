@@ -1,33 +1,79 @@
 package project
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
+//	func FindProjects(devDir string) []string {
+//		var projects []string
+//
+//		filepath.Walk(devDir, func(path string, info os.FileInfo, err error) error {
+//			if err != nil {
+//				return nil
+//			}
+//
+//			if !info.IsDir() {
+//				return nil
+//			}
+//
+//			if isGitRepo(path) {
+//				relPath := strings.TrimPrefix(path, devDir)
+//				relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+//				projects = append(projects, relPath)
+//				return filepath.SkipDir
+//			}
+//
+//			return nil
+//		})
+//
+//		return projects
+//	}
+//
+// Optimized version with concurrency and depth limiting
 func FindProjects(devDir string) []string {
+	maxDepth := 3
 	var projects []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-	filepath.Walk(devDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	// Use worker pool to limit goroutines
+	semaphore := make(chan struct{}, runtime.NumCPU()*2)
+
+	filepath.WalkDir(devDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
 			return nil
 		}
 
-		if !info.IsDir() {
-			return nil
-		}
-
-		if isGitRepo(path) {
-			relPath := strings.TrimPrefix(path, devDir)
-			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
-			projects = append(projects, relPath)
+		// Skip if too deep
+		depth := strings.Count(strings.TrimPrefix(path, devDir), string(filepath.Separator))
+		if depth > maxDepth {
 			return filepath.SkipDir
 		}
+
+		// Check for .git concurrently
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			if isGitRepo(p) {
+				relPath := strings.TrimPrefix(p, devDir+string(filepath.Separator))
+				mu.Lock()
+				projects = append(projects, relPath)
+				mu.Unlock()
+			}
+		}(path)
 
 		return nil
 	})
 
+	wg.Wait()
 	return projects
 }
 

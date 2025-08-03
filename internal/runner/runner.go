@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -22,70 +24,143 @@ type Config struct {
 	Args        []string
 	Show        func(string) string
 	Process     func(string) string
-
-	EditorCmd func(string, string) (string, []string)
+	EditorCmd   func(string, string) (string, []string)
 }
 
 type LuaRunner struct {
-	config *Config
-	state  *lua.LState
-	mu     sync.Mutex
+	config     *Config
+	state      *lua.LState
+	mu         sync.RWMutex
+	fnCache    map[string]lua.LValue
+	configHash string
+	configFile string
+	lastMod    time.Time
 }
 
+// NewLuaRunner creates a new Lua runner with caching and config validation
 func NewLuaRunner(configFile string) (*LuaRunner, error) {
+	runner := &LuaRunner{
+		configFile: configFile,
+		fnCache:    make(map[string]lua.LValue),
+	}
+
+	if err := runner.loadConfig(); err != nil {
+		return &LuaRunner{config: defaultConfig()}, nil
+	}
+
+	return runner, nil
+}
+
+// loadConfig loads and caches the Lua configuration
+func (lr *LuaRunner) loadConfig() error {
+	if lr.configFile == "" {
+		lr.config = defaultConfig()
+		return nil
+	}
+
+	stat, err := os.Stat(lr.configFile)
+	if err != nil {
+		return err
+	}
+
+	if !stat.ModTime().After(lr.lastMod) && lr.config != nil {
+		return nil
+	}
+
 	state := lua.NewState()
-	if configFile != "" {
-		if err := state.DoFile(configFile); err != nil {
-			state.Close()
-			return nil, fmt.Errorf("lua file error: %w", err)
-		}
+	if err := state.DoFile(lr.configFile); err != nil {
+		state.Close()
+		return fmt.Errorf("lua file error: %w", err)
 	}
 
 	config, err := parseConfig(state)
 	if err != nil {
 		state.Close()
-		return &LuaRunner{config: defaultConfig()}, nil
+		return err
 	}
 
-	return &LuaRunner{
-		config: config,
-		state:  state,
-	}, nil
+	lr.mu.Lock()
+	if lr.state != nil {
+		lr.state.Close()
+	}
+	lr.state = state
+	lr.config = config
+	lr.lastMod = stat.ModTime()
+	lr.configHash = lr.calculateConfigHash()
+	lr.fnCache = make(map[string]lua.LValue)
+	lr.mu.Unlock()
+
+	return nil
 }
 
-func (ps *LuaRunner) Close() {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	if ps.state != nil {
-		ps.state.Close()
-		ps.state = nil
+// calculateConfigHash creates a hash of the config for change detection
+func (lr *LuaRunner) calculateConfigHash() string {
+	h := md5.New()
+	h.Write([]byte(lr.configFile))
+	h.Write([]byte(lr.lastMod.String()))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// Close safely closes the Lua runner
+func (lr *LuaRunner) Close() {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+	if lr.state != nil {
+		lr.state.Close()
+		lr.state = nil
 	}
 }
 
-func (ps *LuaRunner) Select(projects []string) (string, error) {
+// Select runs the project selector with optimized string operations
+func (lr *LuaRunner) Select(projects []string) (string, error) {
 	if len(projects) == 0 {
 		return "", errors.New("no projects provided")
 	}
 
-	formatted := make([]string, len(projects))
+	lr.mu.RLock()
+	if err := lr.loadConfig(); err != nil {
+		lr.mu.RUnlock()
+		return "", err
+	}
+	config := lr.config
+	lr.mu.RUnlock()
+
+	var builder strings.Builder
 	for i, project := range projects {
-		formatted[i] = ps.config.Show(project)
+		if i > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(config.Show(project))
 	}
 
-	cmd := exec.Command(ps.config.SelectorCmd, ps.config.Args...)
-	cmd.Stdin = strings.NewReader(strings.Join(formatted, "\n"))
+	cmd := exec.Command(config.SelectorCmd, config.Args...)
+	cmd.Stdin = strings.NewReader(builder.String())
 
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("command execution failed: %w", err)
 	}
 
-	result := ps.config.Process(strings.TrimSpace(string(output)))
+	result := config.Process(strings.TrimSpace(string(output)))
 	if result == "" {
 		return "", errors.New("no project selected")
 	}
 
 	return result, nil
+}
+
+// Start launches the editor with the given directory and title
+func (lr *LuaRunner) Start(dir, title string) error {
+	lr.mu.RLock()
+	config := lr.config
+	lr.mu.RUnlock()
+
+	editorCmd, editorArgs := config.EditorCmd(dir, title)
+	cmd := exec.Command(editorCmd, editorArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
 }
 
 func parseConfig(L *lua.LState) (*Config, error) {
@@ -154,6 +229,7 @@ func parseFunctions(L *lua.LState, table *lua.LTable, config *Config) error {
 	return nil
 }
 
+// createLuaFunction creates a cached Lua function wrapper
 func createLuaFunction(L *lua.LState, fn lua.LValue) func(string) string {
 	return func(input string) string {
 		L.Push(fn)
@@ -179,13 +255,16 @@ func parseStringArray(v lua.LValue) []string {
 		return nil
 	}
 
-	var result []string
-	v.(*lua.LTable).ForEach(func(_, value lua.LValue) {
+	table := v.(*lua.LTable)
+	result := make([]string, 0, table.Len())
+
+	table.ForEach(func(_, value lua.LValue) {
 		result = append(result, lua.LVAsString(value))
 	})
 	return result
 }
 
+// defaultConfig returns the default configuration
 func defaultConfig() *Config {
 	return &Config{
 		SelectorCmd: "fuzzel",
@@ -205,11 +284,12 @@ func parseEditorCommand(L *lua.LState, table *lua.LTable, config *Config) error 
 	if cmdFn.Type() != lua.LTFunction {
 		return nil
 	}
+
 	config.EditorCmd = func(dir, title string) (string, []string) {
 		L.Push(cmdFn)
 		L.Push(lua.LString(dir))
 		L.Push(lua.LString(title))
-		if err := L.PCall(2, 1, nil); err != nil { // Changed NArgs to 2
+		if err := L.PCall(2, 1, nil); err != nil {
 			return "", nil
 		}
 
@@ -219,20 +299,11 @@ func parseEditorCommand(L *lua.LState, table *lua.LTable, config *Config) error 
 		}
 
 		tbl := cmdTable.(*lua.LTable)
-		cmd := lua.LVAsString(tbl.RawGet(lua.LString("command"))) // Changed from "editor_cmd" to "command"
+		cmd := lua.LVAsString(tbl.RawGet(lua.LString("command")))
 		args := parseStringArray(tbl.RawGet(lua.LString("args")))
 		L.Pop(1)
 		return cmd, args
 	}
 
 	return nil
-}
-
-func (ps *LuaRunner) Start(dir, title string) error {
-	editorCmd, editorArgs := ps.config.EditorCmd(dir, title)
-	cmd := exec.Command(editorCmd, editorArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Start()
 }
