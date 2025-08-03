@@ -9,32 +9,6 @@ import (
 	"sync"
 )
 
-//	func FindProjects(devDir string) []string {
-//		var projects []string
-//
-//		filepath.Walk(devDir, func(path string, info os.FileInfo, err error) error {
-//			if err != nil {
-//				return nil
-//			}
-//
-//			if !info.IsDir() {
-//				return nil
-//			}
-//
-//			if isGitRepo(path) {
-//				relPath := strings.TrimPrefix(path, devDir)
-//				relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
-//				projects = append(projects, relPath)
-//				return filepath.SkipDir
-//			}
-//
-//			return nil
-//		})
-//
-//		return projects
-//	}
-//
-// Optimized version with concurrency and depth limiting
 func FindProjects(devDir string) []string {
 	maxDepth := 3
 	var projects []string
