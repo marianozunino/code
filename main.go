@@ -21,8 +21,19 @@ THE SOFTWARE.
 */
 package main
 
-import "mzunino.com.uy/go/code/cmd"
+import (
+	"fmt"
+	"os"
+
+	"github.com/marianozunino/code/v2/cmd"
+)
+
+var version = "v2.0.0"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(version)
+		return
+	}
 	cmd.Execute()
 }

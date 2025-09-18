@@ -1,0 +1,12 @@
+# FZF Configuration
+selector:
+  command: fzf
+  args: ["--prompt=Project > ", "--height=40%", "--layout=reverse"]
+
+editor:
+  command: kitty
+  args: "-d {{.Dir}} -T {{.Title}} --class {{.Title}} sh -c \"tmux new -c {{.Dir}} -A -s {{.Name}} nvim {{.Dir}}\""
+
+format:
+  project_title: "📘 {{.Path}}"
+  extract_path: "{{.Title | trimPrefix \"📘 \"}}"

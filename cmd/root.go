@@ -22,11 +22,14 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/marianozunino/code/v2/internal/core"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -36,6 +39,12 @@ type Config struct {
 	MruFile      string `mapstructure:"mru_file"`
 	SelectorFile string `mapstructure:"selector_file"`
 }
+
+const (
+	maxWaitTime    = 2 * time.Second
+	initialBackoff = 100 * time.Millisecond
+	backoffFactor  = 2
+)
 
 var (
 	cfgFile      string
@@ -60,7 +69,7 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.code.yaml)")
-	rootCmd.PersistentFlags().StringVarP(&selectorFile, "selector-file", "s", "", "lua script that defines the project selector")
+	rootCmd.PersistentFlags().StringVarP(&selectorFile, "selector-file", "s", "", "yaml config file that defines the project selector")
 }
 
 func initConfig() {
@@ -93,5 +102,94 @@ func initConfig() {
 
 	if selectorFile != "" {
 		cfg.SelectorFile = selectorFile
+	}
+}
+
+// launchProject handles the project selection and launching process.
+func launchProject(cmd *cobra.Command, args []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), maxWaitTime)
+	defer cancel()
+
+	mruList := core.NewMRUList(cfg.MruFile, cfg.BaseDir)
+	defer mruList.Close() // Ensure MRU is saved on exit
+
+	finder := &core.ProjectFinder{}
+	allProjects := finder.FindProjects(cfg.BaseDir)
+
+	uniqueProjects := core.RemoveDuplicates(append(mruList.Items(), allProjects...))
+	if len(uniqueProjects) == 0 {
+		return fmt.Errorf("no projects found in %s", cfg.BaseDir)
+	}
+
+	// Load configuration
+	appConfig, err := core.LoadConfig(cfg.SelectorFile)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	selector := core.NewSelector(appConfig)
+	selectedProject, err := selector.Select(uniqueProjects)
+	if err != nil {
+		return fmt.Errorf("project selection failed: %w", err)
+	}
+	if selectedProject == "" {
+		return nil
+	}
+
+	fullPath := filepath.Join(cfg.BaseDir, selectedProject)
+	if !isDirectory(fullPath) {
+		return fmt.Errorf("not a directory: %s", fullPath)
+	}
+
+	windowTitle := fmt.Sprintf("nvim ~ %s", filepath.Base(fullPath))
+
+	if err := launchOrFocusWindow(ctx, selector, fullPath, windowTitle); err != nil {
+		return fmt.Errorf("failed to launch/focus window: %w", err)
+	}
+
+	return mruList.Update(selectedProject)
+}
+
+// launchOrFocusWindow either focuses an existing window or launches a new one.
+func launchOrFocusWindow(ctx context.Context, selector *core.Selector, projectPath, windowTitle string) error {
+	windowManager := &core.WindowManager{}
+	windowID, _ := windowManager.FindWindow(windowTitle)
+
+	if windowID == 0 {
+		if err := selector.Start(projectPath, windowTitle); err != nil {
+			return err
+		}
+		windowID, _ = waitForWindow(ctx, windowTitle)
+	} else {
+		if err := windowManager.FocusWindow(windowID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// isDirectory checks if the given path is a directory.
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// waitForWindow waits for a window with the given title to appear.
+func waitForWindow(ctx context.Context, title string) (int64, error) {
+	backoff := initialBackoff
+	windowManager := &core.WindowManager{}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("timeout waiting for window: %s", title)
+		default:
+			if windowID, _ := windowManager.FindWindow(title); windowID != 0 {
+				return windowID, nil
+			}
+			time.Sleep(backoff)
+			backoff *= backoffFactor
+		}
 	}
 }

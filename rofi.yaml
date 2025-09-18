@@ -1,0 +1,12 @@
+# Rofi Configuration
+selector:
+  command: rofi
+  args: ["-dmenu", "-i", "-p", "Project: "]
+
+editor:
+  command: kitty
+  args: "-d {{.Dir}} -T {{.Title}} --class {{.Title}} sh -c \"tmux has-session -t {{.SanitizedName}} 2>/dev/null && tmux attach -t {{.SanitizedName}} || tmux new -c {{.Dir}} -s {{.SanitizedName}} 'nvim {{.Dir}}' \\; split-window -h -c {{.Dir}}\""
+
+format:
+  project_title: "📘 {{.Path}}"
+  extract_path: "{{.Title | trimPrefix \"📘 \"}}"
