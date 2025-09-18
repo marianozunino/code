@@ -411,7 +411,10 @@ func (s *Selector) formatProjectTitle(path string) string {
 // extractPath extracts the project path from formatted title
 func (s *Selector) extractPath(title string) string {
 	tmpl, err := template.New("extract").Funcs(template.FuncMap{
-		"trimPrefix": strings.TrimPrefix,
+		"trimPrefix":   strings.TrimPrefix,
+		"trimSuffix":   strings.TrimSuffix,
+		"trimSpace":    strings.TrimSpace,
+		"removePrefix": removePrefix,
 	}).Parse(s.config.Format.ExtractPath)
 	if err != nil {
 		return title // Fallback to original title
@@ -427,6 +430,15 @@ func (s *Selector) extractPath(title string) string {
 	}
 
 	return strings.TrimSpace(buf.String())
+}
+
+// removePrefix is a custom template function that handles Unicode prefixes correctly
+func removePrefix(prefix, s string) string {
+	// Template functions receive arguments in reverse order when using pipe operator
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):]
+	}
+	return s
 }
 
 // buildEditorCommand builds the editor command and arguments

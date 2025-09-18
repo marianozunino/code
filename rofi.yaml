@@ -9,4 +9,4 @@ editor:
 
 format:
   project_title: "📘 {{.Path}}"
-  extract_path: "{{.Title | trimPrefix \"📘 \"}}"
+  extract_path: "{{.Title | removePrefix \"📘 \"}}"
