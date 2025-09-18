@@ -464,9 +464,41 @@ func (s *Selector) buildEditorCommand(dir, title string) (string, []string) {
 		return s.config.Editor.Command, []string{"-d", dir, "-T", title, "--class", title}
 	}
 
-	// Parse the template result into command and arguments
-	args := strings.Fields(buf.String())
+	// Handle shell commands properly - don't split quoted arguments
+	args := parseShellArgs(buf.String())
 	return s.config.Editor.Command, args
+}
+
+// parseShellArgs parses shell arguments while preserving quoted strings
+func parseShellArgs(s string) []string {
+	var args []string
+	var current strings.Builder
+	var inQuotes bool
+	var quoteChar rune
+
+	for _, r := range s {
+		switch {
+		case !inQuotes && (r == '"' || r == '\''):
+			inQuotes = true
+			quoteChar = r
+		case inQuotes && r == quoteChar:
+			inQuotes = false
+			quoteChar = 0
+		case !inQuotes && (r == ' ' || r == '\t'):
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	return args
 }
 
 // sanitizeForTmux sanitizes a string for use as a tmux session name
